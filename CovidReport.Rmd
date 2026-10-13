@@ -1,0 +1,169 @@
+---
+title: "COVID19 - Final Project"
+author: "P. Hayes"
+date: "2026-09-09"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r install_packages, include=FALSE}
+library("tidyverse")
+library("sf")
+library(lubridate)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r get_data}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c("time_series_covid19_confirmed_US.csv",  "time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_US.csv",  "time_series_covid19_deaths_global.csv")
+urls <- str_c(url_in,file_names)
+```
+
+```{r read_in_data}
+us_cases <- read_csv(urls[1])
+global_cases <- read_csv(urls[2])
+us_deaths <- read_csv(urls[3])
+global_deaths <- read_csv(urls[4])
+```
+
+## COVID19 Report
+
+These datasets contain daily case and death numbers for COVID-19 around the world between January 2020 and March 2023
+
+```{r tidy_data}
+# tidying global data for cases and deaths and combining into one df
+# rotated df so dates are rows and changed format of dates and some column names
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c('Province/State','Country/Region','Lat','Long'),names_to = "Date", values_to = "Cases")
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c('Province/State','Country/Region','Lat','Long'),names_to = "Date", values_to = "Deaths")
+global <- global_cases %>% full_join(global_deaths) %>% rename(Country_Region = `Country/Region`, Province_State = `Province/State`)%>% mutate(Date = mdy(Date)) %>% unite("Combined_Key",c(Province_State,Country_Region),sep = ", ",na.rm = TRUE,remove = FALSE)
+# filter out entries with no cases
+global <- global %>% filter(Cases>0)
+#accessing population data to add into global
+uid_lookup_url<-"https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>% select(c(Province_State, Country_Region, Population))
+global <- global %>% left_join(uid, by=c("Province_State", "Country_Region"))
+
+```
+
+## Global Analysis
+
+```{r}
+summary(global)
+```
+
+Global cases and deaths by location
+
+```{r}
+global_by_region <- global %>% group_by(Combined_Key)%>% mutate(New_Cases = Cases - lag(Cases), New_Deaths = Deaths - lag(Deaths)) %>% select(-c(Province_State,Country_Region))
+global_by_region
+```
+
+```{r}
+# all rows in global with missing values
+global_clean <- global_by_region %>% drop_na()
+global_missing <- anti_join(global_by_region,global_clean)
+
+# new cases = NA indicates first occurrence of that location in the dataset
+global_first_cases <- global_missing %>% select(c(Combined_Key,Date,Cases,New_Cases,Population))
+global_first_cases <- global_first_cases %>% filter(is.na(New_Cases))
+global_first_cases
+```
+
+When looking at new cases, the first occurrence of a particular location in the dataset shows new_cases as NA, so by filtering all the records where new_cases is NA, we get an idea of when each location reported their first cases of COVID-19.
+
+First case reporting in each location
+
+```{r}
+first_cases <- global_first_cases %>% group_by(Date) %>% summarise(Count = n())
+ggplot(first_cases,aes(Date,Count))+geom_jitter()
+```
+
+Unsurprisingly, the majority of locations reported their first cases in the first half of 2020.
+
+Let's separate this out by year
+
+```{r}
+first_cases_20 <- global_first_cases %>% group_by(Date) %>% subset(year(Date) == 2020) %>% summarise(Count = n())
+ggplot(first_cases_20,aes(Date,Count))+geom_jitter()
+first_cases_21 <- global_first_cases %>% group_by(Date) %>% subset(year(Date) == 2021) %>% summarise(Count = n())
+ggplot(first_cases_21,aes(Date,Count))+geom_jitter()
+first_cases_22 <- global_first_cases %>% group_by(Date) %>% subset(year(Date) == 2022) %>% summarise(Count = n())
+ggplot(first_cases_22,aes(Date,Count))+geom_jitter()
+```
+
+The majority of "first" reported global cases in 2020 occurred between January and April, with a few locations starting their reporting in the fall. In 2021, first reportings were more spread out throughout the year. And in 2022, the final locations to report first cases were mostly in the first half of the year.
+
+```{r}
+print(global_first_cases %>% subset(date(Date)==min(Date)),n=29)
+global_first_cases %>% subset(year(Date) == 2022)
+```
+
+This is all the locations that had reported cases January 22,2020 and all the locations that reported their first cases in 2022.
+
+Let's look at some outliers
+
+```{r}
+global_by_region %>% subset(New_Deaths>10000)
+global_by_region %>% subset(New_Deaths<(-500))
+
+global_by_region %>% subset(New_Cases>800000)
+#looking at the month of January 2022 for US cases since the new cases were quite high for several dates in that time range
+globes <- global_by_region %>% subset(Combined_Key == 'US') %>% subset(month(Date) == 01 & year(Date) == 2022)
+ggplot(globes, aes(x=Date, y=Cases))+ geom_line(aes(color="Cases")) + geom_point(aes(color="Cases")) + geom_line(aes(y=New_Cases,color="New_Cases")) + geom_point(aes(color="New_Cases"))+scale_y_log10()
+ggplot(globes, aes(x=Date, y=Cases))+ geom_line(aes(color="Cases")) + geom_point(aes(color="Cases"))
+ggplot(globes, aes(x=Date, y=New_Cases))+ geom_line(aes(color="New_Cases")) + geom_point(aes(color="New_Cases"))
+#Looking at the new cases graph above, the largest increases occur roughly every 7 days with a somewhat cyclical pattern emerging over the month. This is likely due to reporting schedules rather than strictly increasing positive case counts as by late 2021/early 2022, many states had moved from daily reporting to several days per week.
+
+global_by_region %>% subset(New_Cases<(-50000))
+```
+
+The github page README recorded data modifications, retrospective reporting, back distributions, and update schedules. One of the records in the global set listed Spain as having -1918 deaths on May 25, 2020. This reduction in cases and deaths was due to data validation efforts. The new case value for France on 05/20/2021 is clearly an outlier. The note from the github for that record says it was a reduction of duplicate cases but the historical data had not been adjusted to match.
+
+
+Now let's look at a few different regions
+```{r}
+#China reporting
+chi_reporting <- global_by_region %>% filter(str_detect(Combined_Key,'China')) %>% group_by(Date) %>% summarise(Case_Count = sum(Cases), Death_Count=sum(Deaths))
+ggplot(chi_reporting, aes(x=Date, y=Case_Count))+ geom_line(aes(color="Cases")) + geom_point(aes(color="Cases")) + geom_line(aes(y=Death_Count, color="Deaths")) + geom_point(aes(y=Death_Count, color="Deaths")) + scale_y_log10()
+
+#Argentina reporting
+arg_reporting <- global_by_region %>% subset(Combined_Key == 'Argentina')
+ggplot(arg_reporting, aes(x=Date, y=Cases))+ geom_line(aes(color="Cases")) + geom_point(aes(color="Cases")) + geom_line(aes(y=Deaths, color="Deaths")) + geom_point(aes(y=Deaths, color="Deaths")) + scale_y_log10()
+
+# New Zealand reporting. Not including log scale because it distorts the case/death increase
+nz_reporting <- global_by_region %>% subset(Combined_Key == 'New Zealand')
+ggplot(nz_reporting, aes(x=Date, y=Cases))+ geom_line(aes(color="Cases")) + geom_point(aes(color="Cases"))
+ggplot(nz_reporting, aes(x=Date, y=Deaths))+ geom_line(aes(color="Deaths")) + geom_point(aes(color="Deaths"))
+#subset
+nz_reporting_sub <- global_by_region %>% subset(Combined_Key == 'New Zealand') %>% subset(year(Date)<2022)
+ggplot(nz_reporting_sub, aes(x=Date, y=Cases))+ geom_line(aes(color="Cases")) + geom_point(aes(color="Cases"))
+ggplot(nz_reporting_sub, aes(x=Date, y=Deaths))+ geom_line(aes(color="Deaths")) + geom_point(aes(color="Deaths"))
+```
+China reported the first cases of COVID and had a large initial outbreak. The government implemented strict testing and lockdown requirements in an effort to control the spread. Argentina had a long lockdown in Buenos Aires. New Zealand had a very early and very strict lockdown and didn't break 100 deaths until March 2022, at which point, reporting for deaths was weekly instead of daily.
+
+Map - showing percentage of population who got and who died from COVID (note: not death rate)
+```{r}
+world_coords <-map_data("world")
+final_case <- global_by_region %>% subset(date(Date)==max(Date)) %>% mutate(Case_rate = round(Cases/Population,3), Death_rate = round(Deaths/Cases,3), Death_pop = round(Deaths/Population,3)) %>% select(-c(Date,New_Cases,New_Deaths))
+ggplot()+geom_map(data=world_coords,map=world_coords,aes(long,lat,map_id=region),color='grey',fill='white')+geom_point(data=final_case,aes(Long,Lat,color=Case_rate,size = Population))
+ggplot()+geom_map(data=world_coords,map=world_coords,aes(long,lat,map_id=region),color='grey',fill='white')+geom_point(data=final_case,aes(Long,Lat,color=Death_pop,size = Population))
+```
+Based on the map, most of Europe had high relative case rates. Even though number wise, places like India and China have significantly higher case counts, they also have significantly higher populations. Case rate was calculated by dividing number of cases by the population. For deaths, I did not calculate the relative death rate (death count/case count) but rather the overall percentage of the population who died (death count/population). This was because of issues with case reporting in some locations. For example, North Korea reported 1 case and 6 deaths. 
+
+Looking at the linear relationship between deaths and cases
+```{r}
+per_mil <- global_by_region %>% group_by(Combined_Key) %>% summarize(deaths=max(Deaths), cases=max(Cases),pop=max(Population), cases_per_mil=1000000*Cases/Population, deaths_per_mil=1000000*Deaths/Population) %>% filter(cases>0,pop>0)
+model <- lm(deaths_per_mil~cases_per_mil, data=per_mil)
+summary(model)
+```
+
+## Bias 
+
+The first date of reporting for this dataset began January 22, 2020. There had already been a growing number of cases worldwide since late 2019 so it would be more accurate to say that these are the first reportings included in this dataset rather than the first known cases. The WHO declared the coronavirus outbreak as a public health emergency January 30, 2020 and a pandemic March 11, 2020. Since we all lived through it recently, it can be difficult to separate ourselves from the data. For my part I tried to avoid getting into subjective or opinionated analysis on issues like if the lockdowns or travel restrictions were effective or not. But rather just look at the numbers. That being said, I did notice that some country reportings looked off. For instance, North Korea, as mentioned earlier, only reported 1 case and 6 deaths. Turkmenistan is the only country that did not report any cases. Both countries claimed to have very few/none because of immediate travel restrictions and such. However, given how quickly and widely it spread, it seems suspicious of there being no cases. Additionally reports were being made from governments or agencies which may have reasons to want to modify or conceal information. That could very well be in part to my own assumptions or the biases of the news and reporters.
+Looking through the github README, it became clear just how big of an undertaking this was. Hundreds of regions around the world reporting daily case and death numbers for over 2 years. It also explained some of the concerns and issues I had with some of the records during the analysis. I noticed there were differences and changes in reporting, backlogged tests, mistakes in data input, technical issues, duplicate counting, false positive/negatives, and more that contributed to some of the questionable data. Additionally, the way cases were counted changed since at first it was only lab confirmed cases vs probable or self reported cases/deaths. This dataset had some interesting things that would be missed if you drop NA immediately. For example, cases were reported from Antarctica, the Summer and Winter Olympics, a block of records for "Unknown China", and several repatriated travelers in Canada. There were also several cruise ships, which did report locations and some cases/deaths but don't have a population.
