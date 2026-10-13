@@ -1,0 +1,156 @@
+---
+title: "NYPD Shooting Data Project"
+author: "P. Hayes"
+date: "2025-02-24"
+output: pdf_document
+---
+
+## Setup
+
+```{r install_packages, include=FALSE}
+library("tidyverse")
+library("sf")
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This dataset contains NYPD Shooting Incident Reports from January 2006 to December 2024 across precincts in New York City.
+
+```{r get_data}
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv"
+```
+
+```{r read_in_data}
+nypd_data <- read_csv(url_in)
+```
+
+```{r tidy_data}
+# remove unnecessary columns and changed date column to date data type
+nypd_data <- nypd_data %>%
+  select(-c(JURISDICTION_CODE, X_COORD_CD, Y_COORD_CD)) %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+# just the basic time and location information for incidents
+incident_basic <- nypd_data %>% select(c(INCIDENT_KEY, OCCUR_DATE, OCCUR_TIME, BORO, Latitude, Longitude))
+```
+
+```{r}
+summary(nypd_data)
+```
+
+## Analysis
+
+First we will start with some general analysis.
+
+Plot showing all incidents by location
+```{r incident_plot}
+nyc_map <-read_sf("https://data.cityofnewyork.us/resource/gthc-hcne.geojson")
+incident_plot <- ggplot() + geom_sf(data=nyc_map, mapping=aes(fill=boroname)) + geom_point(data=(incident_basic%>%unique.data.frame()), mapping=aes(Longitude, Latitude)) + geom_sf(data=nyc_map,mapping=aes(color=boroname),fill=NA)+ coord_sf()
+incident_plot
+```
+Looking at the incident map, Staten Island has the fewest cases, mostly clustered along the northern and northeastern part of the island. Brooklyn, Manhattan, the Bronx, and east/central Queens have high case density. Additionally, northwest and southeast Queens have a few clusters with high case density. Due to the high case density covering most of NYC, several locations such as the Bronx Zoo, Central Park, and JFK airport can be easily picked out from the mass of surrounding incidents. 
+
+Total number of incidents each year
+```{r incidents_by_year}
+incidents_by_year <- incident_basic %>% unique.data.frame() %>% count(year(OCCUR_DATE))
+incidents_by_year <- rename(incidents_by_year, year = `year(OCCUR_DATE)`, count = n)
+incidents_by_year
+ggplot(incidents_by_year, aes(year, count)) + geom_col()
+```
+The year with the most recorded incidents was 2006, with 2020 and 2021 close behind. 2018 had the fewest. Overall the annual number of incidents seemed to be trending downward until 2020 at which point it sharply increased.
+
+Total number of incidents combined by month
+```{r incidents_by_month}
+incidents_by_month <- incident_basic %>% unique.data.frame() %>% count(month(OCCUR_DATE, label = TRUE))
+incidents_by_month <- rename(incidents_by_month, month = `month(OCCUR_DATE, label = TRUE)`, count = n)
+incidents_by_month
+ggplot(incidents_by_month, aes(month, count)) + geom_col()
+```
+First I wanted to look at combined totals for each month over the 19 years to see what general pattern emerged. February is the month with the fewest combined number of incidents. July has the most. Then I looked at the months across each year.
+
+Incidents by month
+```{r}
+incidents_monthly <- incident_basic %>% unique.data.frame() %>% count(year(OCCUR_DATE), month(OCCUR_DATE, label = TRUE))
+incidents_monthly <- rename(incidents_monthly, year = `year(OCCUR_DATE)`, month = `month(OCCUR_DATE, label = TRUE)`, count = n)
+# grouping by year
+ggplot(incidents_monthly) + geom_col(aes(x=month,y=count,fill=month)) + labs(x='Monthly Incidents') + theme(axis.text.x = element_blank()) + facet_wrap(~year, strip.position = "bottom")
+# grouping by month
+ggplot(incidents_monthly) + geom_col(aes(x=year,y=count,fill=year)) + labs(x='Monthly Incidents') + theme(axis.text.x = element_blank()) + facet_wrap(~month, strip.position = "bottom")
+```
+
+
+Days with the most incidents
+```{r}
+incident_basic %>% unique.data.frame() %>% count(OCCUR_DATE) %>% arrange(desc(n))
+most_incidents <- tibble(incident_basic %>% unique.data.frame() %>% count(date(OCCUR_DATE)))
+most_incidents <- most_incidents %>% rename(date = `date(OCCUR_DATE)`, incidents = n) %>% slice_max(order_by = incidents, n = 5)
+knitr::kable(most_incidents, caption = "Days with the most incidents")
+```
+
+Now some more specific analyisis.
+
+Incidents per year by borough
+```{r}
+boro_per_year <- incident_basic %>% unique.data.frame() %>% group_by(BORO) %>% count(year(OCCUR_DATE))
+boro_per_year <- rename(boro_per_year, year = `year(OCCUR_DATE)`, count = n)
+ggplot(boro_per_year,aes(year, count, color = BORO))+geom_point() + geom_line()
+```
+As evident by the incident map earlier and this plot here, Brooklyn has the highest number of shootings almost every year while Staten Island has a very low overall yearly case load. Although differing in population density and size, Manhattan and Queens are pretty evenly matched in incident reports. Brooklyn incident reports surged in 2020 and then started decreasing again where the Bronx had a significant increase in 2020, peaked in 2021, and then started decreasing again until 2024.
+
+Looking at boroughs and precincts by total
+```{r}
+incident_basic %>% unique.data.frame() %>% count(BORO)
+
+nypd_data %>% select(INCIDENT_KEY,OCCUR_DATE,OCCUR_TIME,BORO,PRECINCT) %>% unique.data.frame() %>% group_by(PRECINCT) %>% count(PRECINCT, BORO) %>% arrange(desc(n))
+```
+
+Incidents with a minor as the perpetrator
+```{r}
+incidents_perps <- incident_basic %>% unique.data.frame()
+incidents_perps <- incidents_perps %>% left_join(nypd_data%>%select(INCIDENT_KEY,PERP_AGE_GROUP)%>%filter(PERP_AGE_GROUP=="<18"))
+incidents_perp_minor <- incidents_perps %>% filter(PERP_AGE_GROUP=="<18")
+
+incidents_perp_minor_month <- incidents_perp_minor %>% unique.data.frame() %>% count(month(OCCUR_DATE, label = TRUE))
+incidents_perp_minor_month <- rename(incidents_perp_minor_month, month = `month(OCCUR_DATE, label = TRUE)`, count = n)
+incidents_perp_minor_month
+ggplot(incidents_perp_minor_month, aes(month, count)) + geom_col()
+
+incidents_perp_adult <- anti_join(incidents_perps, incidents_perp_minor)
+incidents_perp_adult_month <- incidents_perp_adult %>% unique.data.frame() %>% count(month(OCCUR_DATE, label = TRUE))
+incidents_perp_adult_month <- rename(incidents_perp_adult_month, month = `month(OCCUR_DATE, label = TRUE)`, count = n)
+incidents_perp_adult_month
+ggplot(incidents_perp_adult_month, aes(month, count)) + geom_col()
+```
+I was curious if there would be a noticeable difference in the overall trends between shootings involving minor and adult perpetrators. My assumption was that the trend would show higher totals in the summer months since that's when most kids are out of school. It is interesting that while February is still the lowest and July the highest, May is quite a bit higher and June lower than expected from the adult/general trend. The under 18 set is signifcantly smaller than the adult set so the numbers themselves are lower but the overall trend is a lot less curved.
+
+
+##Just out of curiosity 
+
+Incidents happening at the same time
+```{r}
+incident_basic %>% unique.data.frame() %>% count(OCCUR_DATE, OCCUR_TIME) %>% arrange(desc(n))
+```
+
+Incidents with multiple perpetrators or victims 
+```{r}
+incident_basic %>% count(OCCUR_DATE,OCCUR_TIME, INCIDENT_KEY) %>% arrange(desc(n))
+nypd_data %>% filter(INCIDENT_KEY==282117921)
+nypd_data %>% filter(INCIDENT_KEY==16814010)
+```
+This is where analysis gets tricky. These multi record incidents aren't actually as clear cut as they appear to be. Take the first incident listed here with 20 records. At first glance this appears to be a large mass shooting with half of the records being fatalities. But looking at news reports of the case, it turns out there was only 1 fatality and 5 wounded. How do we get to 20 records from 6 victims? It could be a function of the collection / reporting method or an attempt to anonymize public records but either way, it seems incidents with multiple perpetrators or victims involved, particularly if there was a fatality, each combination of perp/vic/flag is listed as a separate record for that incident. So in this case, there were 2 perpetrators, 5 victims (note: only 5 of the 6 are actually recorded here), with 1 being a fatality (True/False murder flag) which makes 20 combinations.
+The second incident I looked at shows this a little more clearly since there is no information recorded on the perpetrator. In this incident there were 3 victims - <18 M, 18-24 F, and 25-44 M - 1 was a fatality so each victim has a record with a true flag and a record with a false flag.
+This doesn't necessarily mean we can't trust the data, just that we have to be more careful with how we analyze it.
+
+Locations where multiple incidents have been reported
+```{r}
+counts <-incident_basic %>% unique.data.frame() %>% drop_na() %>% count(Latitude, Longitude) %>% arrange(desc(n))
+counts
+ggplot()+ geom_sf(data=nyc_map) + geom_point(data=(counts%>%filter(n>5)), mapping=aes(Longitude, Latitude, size =n, color=n))+ scale_fill_brewer()+ coord_sf()
+```
+I was curious if there were any locations that have had multiple incidents over the years. On looking at a map of where the actual locations were for several of the high count spots, a number of these actually pointed to police precincts around the city. While it is possible that NYPD Precinct 75 has had 40 shootings outside and 38 inside, Precinct 47 has had 39 shootings, Precinct 73 has had 37, and so on, a quick glance at the (sparse) location descriptions make it more likely that the location of many of these incidents was put as the precinct possibly because the actual location was unknown/unreported/unverified or because that is where the incident report was filled out.
+Not all of these are locations of police precincts. For example, the location for the first record with 29 shootings leads to an apartment complex in Staten Island which is in agreement with the records listed in the dataset for those coordinates.
+
+
+## Bias
+It is hard to avoid putting your own assumptions, experiences, and interpretations into the data analysis. To try and mitigate bias as much as possible, I avoided using any demographic information associated with location and perpetrator/victim profiles. I used general analysis for most of the report and restricted the use of analysis of perpetrator information to age <18 for the minor vs adult monthly comparison.
